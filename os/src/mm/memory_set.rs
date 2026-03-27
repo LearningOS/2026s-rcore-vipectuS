@@ -262,6 +262,55 @@ impl MemorySet {
             false
         }
     }
+
+    /// map `len` bytes of memory from virtual address start.
+    /// start must be aligned and len can be 0.
+    /// no allocated pages are allowed.
+    pub fn mmap(&mut self, start: usize, len: usize, prot: usize) -> isize {
+        let start_va = VirtAddr::from(start);
+        if !start_va.aligned() || prot & !0x7 != 0 || prot & 0x7 == 0 {
+            return -1;
+        }
+        let end_va = VirtAddr::from(start + len);
+
+        if self.areas.iter().any(|map_area| {
+            let range = map_area.vpn_range;
+            start_va.floor() < range.get_end() && end_va.ceil() > range.get_start()
+        }) {
+            return -1;
+        }
+
+        // debug!("mmaped");
+        let permission =
+            MapPermission::from_bits_truncate((prot << 1).try_into().unwrap()) | MapPermission::U;
+        self.push(
+            MapArea::new(start_va, end_va, MapType::Framed, permission),
+            None,
+        );
+
+        0
+    }
+
+    /// unmap `len` bytes of memory from virtual address start.
+    /// fail if contain unmaped page.
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        let start_va = VirtAddr::from(start);
+        if !start_va.aligned() {
+            return -1;
+        }
+
+        let start_vpn = start_va.floor();
+        let end_vpn = VirtAddr::from(start + len).ceil();
+        if let Some(idx) = self.areas.iter().position(|area| {
+            area.vpn_range.get_start() == start_vpn && area.vpn_range.get_end() == end_vpn
+        }) {
+            self.areas[idx].unmap(&mut self.page_table);
+            self.areas.remove(idx);
+            0
+        } else {
+            -1
+        }
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {

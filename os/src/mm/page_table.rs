@@ -1,6 +1,6 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 
-use super::{frame_alloc, FrameTracker, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
+use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
@@ -69,6 +69,10 @@ impl PageTableEntry {
     /// The page pointered by page table entry is executable?
     pub fn executable(&self) -> bool {
         (self.flags() & PTEFlags::X) != PTEFlags::empty()
+    }
+    /// The page pointered by page table entry is opaque to user?
+    pub fn is_user(&self) -> bool {
+        (self.flags() & PTEFlags::U) != PTEFlags::empty()
     }
 }
 
@@ -178,4 +182,36 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
         start = end_va.into();
     }
     v
+}
+
+/// Translate a virtual address to a u8 value through page table.
+/// Returns None if the address is not mapped or not readable/accessible by user.
+pub fn translate_user_u8(token: usize, ptr: usize) -> Option<u8> {
+    let page_table = PageTable::from_token(token);
+    let va = VirtAddr::from(ptr);
+    let vpn = va.floor();
+    let pte = page_table.translate(vpn)?;
+    if pte.readable() && pte.is_user() {
+        Some(pte.ppn().get_bytes_array()[va.page_offset()])
+    } else {
+        None
+    }
+}
+
+/// Translate a virtual address and write a u8 value through page table.
+/// Returns 1 if the value is write.
+/// Returns -1 if the address is not mapped or not writeable/accessible by user.
+pub fn translate_user_write_u8(token: usize, ptr: usize, data: u8) -> isize {
+    let page_table = PageTable::from_token(token);
+    let va = VirtAddr::from(ptr);
+    let vpn = va.floor();
+    page_table
+        .translate(vpn)
+        .filter(|pte| pte.is_user() && pte.writable())
+        .map_or(-1, |pte| {
+            // debug!("{}", data);
+            let pa = PhysAddr::from(pte.ppn()).0 + va.page_offset();
+            unsafe { *(pa as *mut u8) = data };
+            0
+        })
 }
