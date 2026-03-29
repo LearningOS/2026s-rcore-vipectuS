@@ -4,6 +4,7 @@ use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 use crate::config::TRAP_CONTEXT_BASE;
 use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
+use crate::task::add_task;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
@@ -68,6 +69,12 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// Process priority
+    pub priority: usize,
+
+    /// Stride for stride scheduling
+    pub stride: usize,
 }
 
 impl TaskControlBlockInner {
@@ -118,6 +125,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    priority: 16,
+                    stride: 0,
                 })
             },
         };
@@ -191,6 +200,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    priority: parent_inner.priority,
+                    stride: parent_inner.stride,
                 })
             },
         });
@@ -204,6 +215,22 @@ impl TaskControlBlock {
         task_control_block
         // **** release child PCB
         // ---- release parent PCB
+    }
+
+    /// parent process spawn a child process with new elf
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> isize {
+        let mut parent_inner = self.inner_exclusive_access();
+        let tcb = Arc::new(TaskControlBlock::new(elf_data));
+        let pid = tcb.pid.0 as isize;
+        parent_inner.children.push(tcb.clone());
+        add_task(tcb);
+        pid
+    }
+
+    /// change the priority of the process.
+    pub fn change_program_priority(&self, priority: usize) {
+        let mut inner = self.inner_exclusive_access();
+        inner.priority = priority;
     }
 
     /// get pid of process
@@ -235,6 +262,18 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+
+    /// map `len` bits of memory from virtual address start.
+    pub fn mmap(&self, start: usize, len: usize, port: usize) -> isize {
+        let mut inner = self.inner_exclusive_access();
+        inner.memory_set.mmap(start, len, port)
+    }
+
+    /// unmap `len` bits of memory from virtual address start.
+    pub fn munmap(&self, start: usize, len: usize) -> isize {
+        let mut inner = self.inner_exclusive_access();
+        inner.memory_set.munmap(start, len)
     }
 }
 
